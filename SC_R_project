@@ -1,0 +1,650 @@
+---
+title: "Facebook"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r}
+library(car)
+facebook <- as.data.frame(read.csv("~/Desktop/nonparametric/project/facebook matrix/dataset_Facebook.csv", sep=";"))
+attach(facebook)
+```
+
+# EDA
+##1
+```{r}
+# Checking missing data
+apply(facebook,2,function(x) sum(is.na(x)))
+```
+##2
+```{r}
+# Features
+summary(facebook)
+# 7 features, 6 qualitative varibles, 1 quantitative variables
+facebook$Category <-as.factor(facebook$Category)
+levels(facebook$Category) <- c("Action","Product","Inspiration")
+facebook$Post.Month<-as.factor(facebook$Post.Month)
+facebook$Post.Weekday<-as.factor(facebook$Post.Weekday)
+facebook$Post.Hour<-as.factor(facebook$Post.Hour)
+levels(facebook$Post.Hour)<-c('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24')
+facebook$Paid<-as.factor(facebook$Paid)
+str(facebook)
+```
+##3
+```{r}
+# Distribution of features
+hist( Page.total.likes,breaks=50, prob=TRUE)
+lines(density(Page.total.likes),col='blue', lwd=2)
+plot(density(Page.total.likes))
+# unimodal (several smaller peaks) and assymetric (skewed-left distribution)
+boxplot(Page.total.likes)
+# no outliers
+table(facebook$Type)
+table(facebook$Category)
+table(facebook$Post.Month)
+table(facebook$Post.Weekday)
+table(facebook$Post.Hour)
+table(facebook$Paid)
+barplot(table(facebook$Type),xlab="Type",ylab="Count", main="Frequency of Type")
+barplot(table(facebook$Category),xlab="Category", ylab="Count", main="Frequency of Category")
+barplot(table(facebook$Post.Month),xlab="Post.Month",ylab="Count", main="Frequency of Post.Month")
+barplot(table(facebook$Post.Weekday),xlab="Post.Weekday",ylab="Count",main="Frequency of Post.Weekday")
+barplot(table(facebook$Post.Hour),xlab="Post.Hour",ylab="Count", main="Frequency of Post.Hour")
+barplot(table(facebook$Paid), xlab="Paid",ylab="Count",main="Frequency of Paid")
+library(ggplot2)
+ggplot(data=facebook)+aes(x=Type,y=Lifetime.Post.Consumers)+geom_boxplot()
+```
+
+##4
+```{r}
+# Lifetime.Post.Consumers as response
+hist(Lifetime.Post.Consumers)
+# Identify outliers and influential observations
+# outliers in response y
+A=boxplot(Lifetime.Post.Consumers)
+A$out
+#IQR rules
+lowerq = quantile(Lifetime.Post.Consumers)[2]
+upperq = quantile(Lifetime.Post.Consumers)[4]
+threshold.upper=IQR(Lifetime.Post.Consumers)*1.5+upperq
+par(mfrow=c(1,1))
+plot(Page.total.likes,Lifetime.Post.Consumers)
+which(Lifetime.Post.Consumers>threshold.upper)
+# outliers:11  27  39  41  43  47  81  99 106 110 122 142 143 151 169 173 176 184 224 226 243 244 245 254 273 276 280 283 372 380 447 448 450 458 461 465 477 483
+which(Lifetime.Post.Consumers>5000)
+# influential 39,245, 143, 447
+```
+
+##5
+```{r}
+# Nonparametric regression for a single quantitative variable
+plot(Page.total.likes,Lifetime.Post.Consumers, pch=16, cex=0.6)
+points(lowess(Page.total.likes,Lifetime.Post.Consumers), pch=16, col="red", cex=0.5)
+lines(lowess(Page.total.likes,Lifetime.Post.Consumers), col="red", lwd=2)
+# LOWESS, linear, monotone
+```
+
+##6
+```{r}
+# Random Forest to estimate features importance
+# paid has one missing value
+sum(is.na(Paid))
+# impute with mode
+library(randomForest)
+set.seed(1)
+fit=randomForest(Lifetime.Post.Consumers~ Page.total.likes+Type+Category+Post.Month+Post.Weekday+Post.Hour+Paid,data=facebook,importance=TRUE,na.action=na.exclude)
+library(caret)
+importance(fit)
+varImpPlot(fit,type = 1)
+# Type,Page.total.likes, Post.Month, Category, Post.Weekday, Post.Hour
+```
+
+##7
+```{r}
+# Feature creation
+# Combine Weekday
+levels(facebook$Post.Weekday) <- list("weekday"=c(1:5),"weekend"=c(6,7))
+# Combine Post.Hour
+levels(facebook$Post.Hour) <- list("morning"=c(6:12), "afternoon"=c(12:18),"evening"=c(18:24),"night"=c(0:6))
+```
+
+
+# Modeling Lifetime.Post.Consumers, actions common to all paths
+```{r}
+#randomly split the data into a train and a test set, 
+set.seed(10)
+# Paid missing data
+facebook$Paid[500]=0
+sum(is.na(Paid))
+
+index <- sample(1:nrow(facebook),round(0.75*nrow(facebook)))
+train <- facebook[,c(1:7,11)][index,]
+test <- facebook[,c(1:7,11)][-index,]
+```
+# Path1: From the linear to polynomial to GAM 
+# With outliers
+
+```{r}
+lm.fit <- lm(Lifetime.Post.Consumers~ .,data=train)
+summary(lm.fit)
+# Adjusted R-squared: 0.2445
+lm.polytest = lm(Lifetime.Post.Consumers~poly(Page.total.likes,2,raw = TRUE),data=facebook)
+summary(lm.polytest)
+# Degree of page.total.like is 1
+# diagonosis
+par(mfrow=c(2,2))
+plot(lm.fit)
+
+cooksd <- cooks.distance(lm.fit)
+par(mfrow=c(1,1))
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")  # plot cook's distance
+abline(h = 4*mean(cooksd, na.rm=T), col="red")  # add cutoff line
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>4*mean(cooksd, na.rm=T),names(cooksd),""), col="red") 
+
+influential <- as.numeric(names(cooksd)[(cooksd > 4*mean(cooksd, na.rm=T))])
+
+
+pr.lm <- predict(lm.fit,test[,c(1:7)])
+MSE.lm <- sum((pr.lm - test$Lifetime.Post.Consumers)^2)/(nrow(test))
+MSE.lm 
+# 345712.6
+
+Mean.lm <- sum(abs(pr.lm - test$Lifetime.Post.Consumers))/nrow(test)
+Mean.lm 
+# 398.9903
+library(MASS)
+lm.fit2 <- lm(Lifetime.Post.Consumers~Page.total.likes*.+., data=train)
+summary(lm.fit2)
+step.model <- stepAIC(lm.fit2, direction = "backward")
+
+summary(step.model)
+par(mfrow=c(2,2))
+plot(step.model)
+ #Adjusted R-squared: 0.2871
+
+anova(lm.fit, step.model)
+# hypothesis test comparing the two models, the null hypothesis is that the two models fit the data equally well, the alternative hypothesis is that the full model is superior.
+# here the F-statistic is 2.4588 and the associated p-value is virtually zero. This provides very clear evidence the model 2 is far superior to the model 1.
+
+
+
+pr.lm2 <- predict(step.model,test[,c(1:7)])
+MSE.lm2 <- sum((pr.lm2 - test$Lifetime.Post.Consumers)^2)/(nrow(test))
+MSE.lm2 
+# 317755.2
+
+
+Mean.lm2 <- sum(abs(pr.lm2 - test$Lifetime.Post.Consumers))/nrow(test)
+Mean.lm2 
+# 382.5019
+```
+
+
+```{r}
+require(splines)
+      
+spline.fit2<-smooth.spline(train$Lifetime.Post.Consumers,train$Page.total.likes,cv = TRUE)
+spline.fit2
+
+plot(train$Lifetime.Post.Consumers,train$Page.total.likes,col="grey")
+#Plotting Regression Line
+lines(spline.fit2,lwd=2,col="purple")
+legend("topright",("Smoothing Splines with 
+df selected by CV"),col="purple",lwd=2)
+
+#lambda= 9.135328e-05 
+# Degrees of Freedom (Df): 8.591664
+
+pr.spline = predict(spline.fit2,test$Page.total.likes)
+ pr.spline
+ 
+MSE.lmS <- sum((pr.spline$y- test$Lifetime.Post.Consumers)^2)/nrow(test)
+MSE.lmS 
+#326057283680
+
+Mean.lmS <- sum(abs(pr.spline$y - test$Lifetime.Post.Consumers))/nrow(test)
+Mean.lmS
+#561097
+```
+
+```{r}
+
+library(gam)
+gammodel = gam(Lifetime.Post.Consumers ~s(Page.total.likes) + Post.Hour+ Post.Month+Post.Weekday+ Category+Type+Paid, data=train) 
+summary(gammodel)
+pr.GAM = predict(gammodel,test)
+ MSE.GAM <- sum((pr.GAM- test$Lifetime.Post.Consumers)^2)/nrow(test)
+MSE.GAM 
+# MSE 340035.2
+
+Mean.GAM <- sum(abs(pr.GAM - test$Lifetime.Post.Consumers))/nrow(test)
+Mean.GAM 
+# Mean.GAM 393.1494
+
+par(mfrow=c(4,2))
+plot(gammodel, se=T, resid=T, pch=16)
+
+```
+
+# Path1: Without outliers
+```{r}
+ro.facebook = facebook[c(-11,-27,-39,-41,-43,-47,-81,-99,-106,-110,-122,-142,-143,-151,-169,-173,-176,-184,-224,-226 ,-243,-244,-245,-254,-273,-276,-280,-283,-372,-380,-447,-448,-450,-458,-461,-465,-477,-483),]
+ro.train <- ro.facebook[,c(1:7,11)][index,]
+ro.test <- ro.facebook[,c(1:7,11)][-index,]
+```
+
+```{r}
+ro.lm.fit <- lm(Lifetime.Post.Consumers~ poly(Page.total.likes,5,raw = T)+.,data=ro.train)
+summary(ro.lm.fit)
+# Adjusted R-squared: 0.4027
+ro.lm.polytest = lm(Lifetime.Post.Consumers~poly(Page.total.likes,5,raw = T),data=ro.facebook)
+summary(ro.lm.polytest)
+# Degree of page.total.like is 5
+# diagonosis
+par(mfrow=c(2,2))
+plot(ro.lm.fit)
+
+ro.pr.lm <- predict(ro.lm.fit,ro.test[,c(1:7)])
+MSE.ro.lm <- sum((ro.pr.lm - ro.test$Lifetime.Post.Consumers)^2)/(nrow(ro.test))
+MSE.ro.lm 
+# 133190.8
+
+Mean.ro.lm <- sum(abs(ro.pr.lm - ro.test$Lifetime.Post.Consumers))/nrow(ro.test)
+Mean.ro.lm 
+# 250.4237
+
+ro.lm.fit2 <- lm(Lifetime.Post.Consumers~Page.total.likes*.+.+poly(Page.total.likes,5,raw = T), data=ro.train)
+summary(ro.lm.fit2)
+
+ro.step.model <- stepAIC(ro.lm.fit2, direction = "backward")
+
+summary(ro.step.model)
+par(mfrow=c(2,2))
+plot(ro.step.model)
+ #Adjusted R-squared: 0.4758
+
+anova(ro.lm.fit, ro.step.model)
+# hypothesis test comparing the two models, the null hypothesis is that the two models fit the data equally well, the alternative hypothesis is that the full model is superior.
+# here the F-statistic is 2.5721 and the associated p-value is virtually zero. This provides very clear evidence the model 2 is far superior to the model 1.
+
+
+
+ro.pr.lm2 <- predict(ro.step.model,ro.test[,c(1:7)])
+MSE.ro.lm2 <- sum((ro.pr.lm2 - ro.test$Lifetime.Post.Consumers)^2)/(nrow(ro.test))
+MSE.ro.lm2 
+# 147364.1
+
+Mean.ro.lm2 <- sum(abs(ro.pr.lm2 - ro.test$Lifetime.Post.Consumers))/nrow(ro.test)
+Mean.ro.lm2 
+# 261.717
+
+
+```
+```
+```{r}
+
+ require(splines)
+      rotrain = ro.train
+      rotest = ro.test
+ro.spline.fit2<-smooth.spline(rotrain$Lifetime.Post.Consumers, rotrain$Page.total.likes,cv = TRUE)
+ro.spline.fit2
+
+plot(rotrain$Lifetime.Post.Consumers,rotrain$Page.total.likes,col="grey")
+#Plotting Regression Line
+lines(ro.spline.fit2,lwd=2,col="purple")
+legend("topright",("Smoothing Splines with 
+df selected by CV"),col="purple",lwd=2)
+
+#lambda= 0.000957732
+# Degrees of Freedom (Df): 9.019895
+
+ro.pr.spline = predict(ro.spline.fit2,rotest$Page.total.likes)
+ ro.pr.spline
+ 
+ MSE.ro.lmS <- sum((ro.pr.spline$y- rotest$Lifetime.Post.Consumers)^2)/nrow(rotest)
+MSE.ro.lmS 
+#15076215863
+
+Mean.ro.lmS <- sum(abs(ro.pr.spline$y - rotest$Lifetime.Post.Consumers))/nrow(rotest)
+Mean.ro.lmS
+#119699.2
+```
+
+
+```{r}
+library(gam)
+ro.gammodel = gam(Lifetime.Post.Consumers ~s(Page.total.likes) + Post.Hour+ Post.Month+Post.Weekday+ Category+Type+Paid, data=ro.train) 
+summary(ro.gammodel)
+ro.pr.GAM = predict(ro.gammodel,ro.test)
+ MSE.ro.GAM <- sum((ro.pr.GAM- ro.test$Lifetime.Post.Consumers)^2)/nrow(ro.test)
+MSE.ro.GAM 
+# MSE 133825.5
+
+Mean.ro.GAM <- sum(abs(ro.pr.GAM - ro.test$Lifetime.Post.Consumers))/nrow(ro.test)
+Mean.ro.GAM 
+# Mean.GAM 256.7342
+
+par(mfrow=c(4,2))
+plot(gammodel, se=T, resid=T, pch=16)
+```
+
+
+# Path 2: Neural Networks
+
+```{r}
+paid_imp <- facebook$Paid                                  
+paid_imp[is.na(paid_imp)] <- 0 
+a<-cbind(facebook,paid_imp)
+
+facebook.1<- a[,c(1:6,11,20)]
+facebook.1$Type <- as.numeric(facebook.1$Type)
+facebook.1$Post.Month <- as.numeric(facebook.1$Post.Month)
+facebook.1$Category <- as.numeric(facebook.1$Category)
+facebook.1$Post.Weekday <- as.numeric(facebook.1$Post.Weekday)
+facebook.1$Post.Hour <- as.numeric(facebook.1$Post.Hour)
+facebook.1$paid_imp <- as.numeric(facebook.1$paid_imp)
+
+maxs <- apply(facebook.1, 2, max) 
+mins <- apply(facebook.1, 2, min)
+
+scaled <- as.data.frame(scale(facebook.1, 
+center = mins, scale = maxs - mins))
+
+library(caret)
+library(neuralnet)
+train_ <- scaled[index,]
+test_ <- scaled[-index,]
+
+n <- names(train_)
+f <- as.formula(paste("Lifetime.Post.Consumers ~", paste(n[!n %in% "Lifetime.Post.Consumers"], collapse = " + ")))
+
+seed.grid=c(10,100,1000)
+MSE.nn1<-matrix(rep(0,15),nrow=3,ncol=10)
+for(i in 1:3)
+{
+for (j in 1:10)
+{
+set.seed(seed.grid[i])	
+nn <- neuralnet(f,data=train_,hidden=c(j),linear.output=T)
+pr.nn <- compute(nn,subset(test_,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(facebook$Lifetime.Post.Consumers)-min(facebook$Lifetime.Post.Consumers))+min(facebook$Lifetime.Post.Consumers)
+test.r <- (test_$Lifetime.Post.Consumers)*(max(facebook$Lifetime.Post.Consumers)-min(facebook$Lifetime.Post.Consumers))+min(facebook$Lifetime.Post.Consumers)
+MSE.nn1[i,j] <- sum((test.r - pr.nn_)^2)/nrow(test_)
+}
+}
+print(MSE.nn1)
+summary(nn)
+nn <- neuralnet(f,data=train_,hidden=c(5),linear.output=T)
+pr.nn <- compute(nn,subset(test_,select=-c(Lifetime.Post.Consumers)))
+plot(nn)
+plot(test$Lifetime.Post.Consumers,pr.nn_,col='red',main='Real vs predicted NN',pch=18,cex=0.7)
+abline(0,1)
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(test_)
+
+MSE.nn2<-matrix(rep(0,10*3),nrow=3,ncol=10)
+k=0
+for(l in 1:3)
+{
+set.seed(seed.grid[l])	
+	for (j in 1:4)
+	{
+nn <- neuralnet(f,data=train_,hidden=c(5,j),linear.output=T)
+pr.nn <- compute(nn,subset(test_,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(facebook$Lifetime.Post.Consumers)-min(facebook$Lifetime.Post.Consumers))+min(facebook$Lifetime.Post.Consumers)
+test.r <- (test_$Lifetime.Post.Consumers)*(max(facebook$Lifetime.Post.Consumers)-min(facebook$Lifetime.Post.Consumers))+min(facebook$Lifetime.Post.Consumers)
+MSE.nn2[l,j] <- sum((test.r - pr.nn_)^2)/nrow(test_)
+}
+}
+print(MSE.nn2)
+summary(nn)
+nn <- neuralnet(f,data=train_,hidden=c(5,3),linear.output=T)
+plot(nn)
+plot(test$Lifetime.Post.Consumers,pr.nn_,col='red',main='Real vs predicted NN',pch=18,cex=0.7)
+abline(0,1)
+```
+
+# without outliers
+```{r}
+ro.facebook = facebook[c(-11,-27,-39,-41,-43,-47,-81,-99,-106,-110,-122,-142,-143,-151,-169,-173,-176,-184,-224,-226 ,-243,-244,-245,-254,-273,-276,-280,-283,-372,-380,-447,-448,-450,-458,-461,-465,-477,-483),c(1:7,11)]
+
+set.seed(10)
+ro.index <- sample(1:nrow(ro.facebook),round(0.75*nrow(facebook)))
+
+ro.facebook$Type <- as.numeric(ro.facebook$Type)
+ro.facebook$Post.Month <- as.numeric(ro.facebook$Post.Month)
+ro.facebook$Category <- as.numeric(ro.facebook$Category )
+ro.facebook$Post.Weekday <- as.numeric(ro.facebook$Post.Weekday)
+ro.facebook$Post.Hour <- as.numeric(ro.facebook$Post.Hour)
+ro.facebook$Paid <- as.numeric(ro.facebook$Paid)
+
+maxs <- apply(ro.facebook, 2, max) 
+mins <- apply(ro.facebook, 2, min)
+
+ro.scaled <- as.data.frame(scale(ro.facebook, 
+center = mins, scale = maxs - mins))
+
+
+library(caret)
+library(neuralnet)
+ro.train_ <- ro.scaled[ro.index,]
+ro.test_ <- ro.scaled[-ro.index,]
+
+n <- names(ro.train_)
+f <- as.formula(paste("Lifetime.Post.Consumers ~", paste(n[!n %in% "Lifetime.Post.Consumers"], collapse = " + ")))
+
+seed.grid=c(10,100,1000)
+ro.MSE.nn1<-matrix(rep(0,15),nrow=3,ncol=10)
+for(i in 1:3)
+{
+for (j in 1:10)
+{
+set.seed(seed.grid[i])	
+ro.nn <- neuralnet(f,data=ro.train_,hidden=c(j),linear.output=T)
+ro.pr.nn <- compute(ro.nn,subset(ro.test_,select=-c(Lifetime.Post.Consumers)))
+ro.pr.nn_ <- ro.pr.nn$net.result*(max(ro.facebook$Lifetime.Post.Consumers)-min(ro.facebook$Lifetime.Post.Consumers))+min(ro.facebook$Lifetime.Post.Consumers)
+ro.test.r <- (ro.test_$Lifetime.Post.Consumers)*(max(ro.facebook$Lifetime.Post.Consumers)-min(ro.facebook$Lifetime.Post.Consumers))+min(ro.facebook$Lifetime.Post.Consumers)
+ro.MSE.nn1[i,j] <- sum((ro.test.r - ro.pr.nn_)^2)/nrow(ro.test_)
+}
+}
+print(ro.MSE.nn1)
+ro.nn <- neuralnet(f,data=ro.train_,hidden=c(4),linear.output=T)
+plot(ro.nn)
+ro.pr.nn <- compute(ro.nn,subset(ro.test_,select=-c(Lifetime.Post.Consumers)))
+ro.pr.nn_ <- ro.pr.nn$net.result*(max(ro.facebook$Lifetime.Post.Consumers)-min(ro.facebook$Lifetime.Post.Consumers))+min(ro.facebook$Lifetime.Post.Consumers)
+ro.test.r <- (ro.test_$Lifetime.Post.Consumers)*(max(ro.facebook$Lifetime.Post.Consumers)-min(ro.facebook$Lifetime.Post.Consumers))+min(ro.facebook$Lifetime.Post.Consumers)
+ro.MSE.nn <- sum((ro.test.r - ro.pr.nn_)^2)/nrow(ro.test_)
+```
+
+```{r}
+paid_imp <- facebook$Paid                                  
+paid_imp[is.na(paid_imp)] <- 0 
+a<-cbind(facebook,paid_imp)
+
+facebook.2<- a[,c(1:4,11)]
+facebook.2$Type <- as.numeric(facebook.1$Type)
+facebook.2$Post.Month <- as.numeric(facebook.1$Post.Month)
+facebook.2$Category <- as.numeric(facebook.1$Category)
+
+
+maxs <- apply(facebook.2, 2, max) 
+mins <- apply(facebook.2, 2, min)
+
+scaled.2 <- as.data.frame(scale(facebook.2, 
+center = mins, scale = maxs - mins))
+
+library(caret)
+library(neuralnet)
+train_2 <- scaled.2[index,]
+test_2 <- scaled.2[-index,]
+
+n <- names(train_2)
+f <- as.formula(paste("Lifetime.Post.Consumers ~", paste(n[!n %in% "Lifetime.Post.Consumers"], collapse = " + ")))
+
+seed.grid=c(10,100,1000)
+MSE.nn1_2<-matrix(rep(0,15),nrow=3,ncol=10)
+for(i in 1:3)
+{
+for (j in 1:10)
+{
+set.seed(seed.grid[i])	
+nn_2 <- neuralnet(f,data=train_2,hidden=c(j),linear.output=T)
+pr.nn_2 <- compute(nn_2,subset(test_2,select=-c(Lifetime.Post.Consumers)))
+pr.nn__ <- pr.nn_2$net.result*(max(facebook.2$Lifetime.Post.Consumers)-min(facebook.2$Lifetime.Post.Consumers))+min(facebook.2$Lifetime.Post.Consumers)
+test.r_2 <- (test_2$Lifetime.Post.Consumers)*(max(facebook.2$Lifetime.Post.Consumers)-min(facebook.2$Lifetime.Post.Consumers))+min(facebook.2$Lifetime.Post.Consumers)
+MSE.nn1_2[i,j] <- sum((test.r_2 - pr.nn__)^2)/nrow(test_2)
+}
+}
+print(MSE.nn1_2)
+
+nn_2 <- neuralnet(f,data=train_2,hidden=c(5),linear.output=T)
+plot(nn_2)
+pr.nn <- compute(nn_2,subset(test_2,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(facebook.2$Lifetime.Post.Consumers)-min(facebook.2$Lifetime.Post.Consumers))+min(facebook.2$Lifetime.Post.Consumers)
+test.r <- (test_2$Lifetime.Post.Consumers)*(max(facebook.2$Lifetime.Post.Consumers)-min(facebook.2$Lifetime.Post.Consumers))+min(facebook.2$Lifetime.Post.Consumers)
+MSE.nn <- sum((test.r - pr.nn_)^2)/nrow(test_2)
+```
+
+# Paths 3: Ensemble
+```{r}
+#splitting facebook into 3 parts. traning, testing and ensembling 
+set.seed(10)
+n = 1:nrow(facebook)
+ensemblerow <- sample(n,round(0.1*length(n)))
+restrow = n[-ensemblerow]
+etrainrow <- sample(restrow,round(0.75*length(restrow)))
+etestrow <- n[-c(ensemblerow,etrainrow)]
+etrain <- facebook[,c(1:7,11)][etrainrow,]
+etest <- facebook[,c(1:7,11)][etestrow,]
+ensemble <- facebook[,c(1:7,11)][ensemblerow,]
+erest <- facebook[,c(1:7,11)][-ensemblerow,]
+```
+
+```{r}
+# removing outliers
+set.seed(10)
+ro.facebook = facebook[c(-11,-27,-39,-41,-43,-47,-81,-99,-106,-110,-122,-142,-143,-151,-169,-173,-176,-184,-224,-226 ,-243,-244,-245,-254,-273,-276,-280,-283,-372,-380,-447,-448,-450,-458,-461,-465,-477,-483),]
+
+ro.n = 1:nrow(ro.facebook)
+ro.ensemblerow <- sample(ro.n,round(0.1*length(ro.n)))
+ro.restrow = ro.n[-ro.ensemblerow]
+ro.etrainrow <- sample(ro.restrow,round(0.75*length(ro.restrow)))
+ro.etestrow <- n[-c(ro.ensemblerow,ro.etrainrow)]
+ro.etrain <- ro.facebook[,c(1:7,11)][ro.etrainrow,]
+ro.etest <- ro.facebook[,c(1:7,11)][ro.etestrow,]
+ro.ensemble <- ro.facebook[,c(1:7,11)][ro.ensemblerow,]
+ro.erest <- ro.facebook[,c(1:7,11)][-ro.ensemblerow,]
+```
+#stacking with outliers
+```{r}
+#use AIC stepwise linear regression
+e.lm = lm(Lifetime.Post.Consumers~Page.total.likes*.+., data=etrain)
+e.lm = stepAIC(e.lm, direction = "backward")
+
+#generate neural network model for training
+paid_imp <- erest$Paid                                  
+paid_imp[is.na(paid_imp)] <- 0 
+a<-cbind(erest,paid_imp)
+
+erest.1<- a[,-7]
+erest.1$Type <- as.numeric(erest.1$Type)
+erest.1$Post.Month <- as.numeric(erest.1$Post.Month)
+erest.1$Category <- as.numeric(erest.1$Category)
+erest.1$Post.Weekday <- as.numeric(erest.1$Post.Weekday)
+erest.1$Post.Hour <- as.numeric(erest.1$Post.Hour)
+erest.1$paid_imp <- as.numeric(erest.1$paid_imp)
+
+
+ensemble.1 = ensemble
+ensemble.1$Type <- as.numeric(ensemble.1$Type)
+ensemble.1$Post.Month <- as.numeric(ensemble.1$Post.Month)
+ensemble.1$Category <- as.numeric(ensemble.1$Category)
+ensemble.1$Post.Weekday <- as.numeric(ensemble.1$Post.Weekday)
+ensemble.1$Post.Hour <- as.numeric(ensemble.1$Post.Hour)
+ensemble.1$Paid <- as.numeric(ensemble.1$Paid)
+ 
+f.paid_imp <- facebook$Paid                                  
+f.paid_imp[is.na(paid_imp)] <- 0 
+f.a<-cbind(facebook,f.paid_imp)
+
+facebook.1<- f.a[,c(1:6,11,20)]
+facebook.1$Type <- as.numeric(facebook.1$Type)
+facebook.1$Post.Month <- as.numeric(facebook.1$Post.Month)
+facebook.1$Category <- as.numeric(facebook.1$Category)
+facebook.1$Post.Weekday <- as.numeric(facebook.1$Post.Weekday)
+facebook.1$Post.Hour <- as.numeric(facebook.1$Post.Hour)
+facebook.1$f.paid_imp <- as.numeric(facebook.1$f.paid_imp)
+
+maxs <- apply(erest.1, 2, max) 
+mins <- apply(erest.1, 2, min)
+
+fmaxs <- apply(facebook.1, 2, max) 
+fmins <- apply(facebook.1, 2, min)
+
+
+emaxs <- apply(ensemble.1, 2, max) 
+emins <- apply(ensemble.1, 2, min)
+escaled  <- as.data.frame(scale(ensemble.1, center = emins, scale = emaxs - emins))
+ensemble_ = escaled
+fscaled <- as.data.frame(scale(facebook.1,center = mins, scale = maxs - mins))
+scaled  <- as.data.frame(scale(erest.1, center = mins, scale = maxs - mins))
+library(neuralnet)
+train_ <- fscaled[etrainrow,]
+test_ <- fscaled[etestrow,]
+
+n <- names(train_)
+f <- as.formula(paste("Lifetime.Post.Consumers ~", paste(n[!n %in% "Lifetime.Post.Consumers"], collapse = " + ")))
+
+seed.grid=c(10,100,1000)
+MSE.nn1<-matrix(rep(0,15),nrow=3,ncol=10)
+for(i in 1:3)
+{
+for (j in 1:10)
+{
+set.seed(seed.grid[i])	
+nn <- neuralnet(f,data=train_,hidden=c(j),linear.output=T)
+pr.nn <- compute(nn,subset(test_,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(erest$Lifetime.Post.Consumers)-min(erest$Lifetime.Post.Consumers))+min(erest$Lifetime.Post.Consumers)
+test.r <- (test_$Lifetime.Post.Consumers)*(max(erest$Lifetime.Post.Consumers)-min(erest$Lifetime.Post.Consumers))+min(erest$Lifetime.Post.Consumers)
+MSE.nn1[i,j] <- sum((test.r - pr.nn_)^2)/nrow(test_)
+}
+}
+print(MSE.nn1)
+summary(nn)
+nn <- neuralnet(f,data=train_,hidden=c(5),linear.output=T)
+pr.nn <- compute(nn,subset(test_,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(erest$Lifetime.Post.Consumers)-min(erest$Lifetime.Post.Consumers))+min(erest$Lifetime.Post.Consumers)
+epr.nn = pr.nn_
+epr.lm <- predict(e.lm,etest[,c(1:7)])
+ne = cbind(etest,epr.lm,epr.nn)
+
+stack.lm = lm(Lifetime.Post.Consumers~ epr.lm+epr.nn,data = ne)
+
+summary(stack.lm)
+ensem.lm = predict(e.lm,ensemble[,c(1:7)])
+
+pr.nn <- compute(nn,subset(,select=-c(Lifetime.Post.Consumers)))
+pr.nn_ <- pr.nn$net.result*(max(erest$Lifetime.Post.Consumers)-min(erest$Lifetime.Post.Consumers))+min(erest$Lifetime.Post.Consumers)
+epr.nn <- compute(nn,subset(ensemble_,select=-c(Lifetime.Post.Consumers)))
+ensem.nn <- epr.nn$net.result*(max(ensemble$Lifetime.Post.Consumers)-min(ensemble$Lifetime.Post.Consumers))+min(ensemble$Lifetime.Post.Consumers)
+  
+
+pr.ensem.lm = predict(stack.lm,epr.lm = ensem.lm,epr.nn  = ensem.nn)
+
+tMSE.ens <- sum(stack.lm$residuals^2)/nrow(ensemble)
+tMSE.ens 
+# train MSE 348548.4
+
+tMean.ens <- sum(abs(stack.lm$residuals))/nrow(ensemble)
+tMean.ens 
+# train Mean.GAM 646.8461
+
+ MSE.ens <- sum((pr.ensem.lm- ensemble$Lifetime.Post.Consumers)^2)/nrow(ensemble)
+MSE.ens 
+# test MSE 1295743
+
+Mean.ens <- sum(abs(pr.ensem.lm - ensemble$Lifetime.Post.Consumers))/nrow(ensemble)
+Mean.ens 
+# test Mean.GAM 1203.213
+
+```
+
